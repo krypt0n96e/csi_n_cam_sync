@@ -31,10 +31,10 @@ def filter_csi_raw(raw_list, null_subcarriers=None):
 # ---------------- Main Script ----------------
 print("✅ Bắt đầu xử lý dữ liệu CSI...")
 
-root_output_folder = "output_csi_samples_snapped_forward"
+root_output_folder = "output_csi_samples_snapped_forward_v2"
 os.makedirs(root_output_folder, exist_ok=True)
 
-data_df = pd.read_csv('csi_data_20250508_101047_snapped_forward.csv')
+data_df = pd.read_csv('output_snapped_with_logic.csv')
 timestamp_df = pd.read_csv('timestamps.csv')
 
 # data_df['timestamp_real_ms'] = pd.to_datetime(data_df['timestamp_real_ms'], unit='ms')

@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 
 # Đọc dữ liệu gốc
-df = pd.read_csv('csi_data_20250508_101047.csv')
+df = pd.read_csv('csi_data_20250508_141303_fix_duplicate.csv')
 df = df.sort_values(['mac', 'timestamp_real_ms']).reset_index(drop=True)
 
 # Tạo lưới thời gian 100 Hz
@@ -31,4 +31,4 @@ for mac, group in df.groupby('mac'):
 
 # Tạo DataFrame và xuất
 output_df = pd.DataFrame(result_rows)
-output_df.to_csv('csi_data_20250508_101047_snapped_forward.csv', index=False)
+output_df.to_csv('csi_data_20250508_141303_snapped_forward.csv', index=False)

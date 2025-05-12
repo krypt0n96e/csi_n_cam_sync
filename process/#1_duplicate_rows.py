@@ -4,9 +4,9 @@ import copy
 
 
 # Tên file
-input_file = 'csi_data_20250508_101047.csv'
-output_file = 'csi_data_20250508_101047_fix_duplicate.csv'
-duplicate_file = 'csi_data_20250508_101047_duplicate_rows.csv'
+input_file = 'csi_data_20250508_141303.csv'
+output_file = 'csi_data_20250508_141303_fix_duplicate.csv'
+duplicate_file = 'csi_data_20250508_141303_duplicate_rows.csv'
 
 
 # Đọc dữ liệu
