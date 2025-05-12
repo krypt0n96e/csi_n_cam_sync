@@ -2,12 +2,12 @@
 # -*- coding: utf-8 -*-
 """
 Chương trình hiển thị video .avi và đồ thị biên độ CSI theo thời gian thực cho 3 thiết bị (MAC).
-Cho phép chọn thư mục chứa video trước khi nhảy đến timestamp để đồng bộ.
-Đồ thị gồm 2 cột: cột 1 heatmap biên độ trên các subcarrier, cột 2 line plot biên độ trung bình theo thời gian.
-Cửa sổ thời gian ±1s quanh timestamp hiện tại (ms).
-Nhãn lấy từ ‘timestamp.csv’ nếu có cột 'start_utc_ms' và 'end_utc_ms', hiển thị trên khung video.
-Input CSI file: 'input.csv' với cột 'mac', 'timestamp_real_ms', 'CSI'.
-Chỉ giữ các subcarriers sau lọc.
+Cho phép chọn:
+ - Thư mục chứa video (.avi)
+ - File nhãn (timestamp.csv/timestamps.csv với cột start_utc_ms, end_utc_ms, label, location)
+ - File CSI (CSV với mac, timestamp_real_ms, CSI)
+Nhập timestamp (ms) để tua video và đồng bộ tín hiệu.
+Đồ thị gồm 2 cột: cột 1 heatmap biên độ, cột 2 line plot biên độ từng subcarrier, 3 hàng tương ứng 3 thiết bị.
 """
 import sys
 import os
@@ -18,7 +18,7 @@ from PyQt5 import QtWidgets, QtCore, QtGui
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 
-WINDOW_MS = 2000  # ±1s = 1000ms mỗi bên
+WINDOW_MS = 1000
 DEFAULT_FPS = 30
 
 # Hàm lọc CSI raw
@@ -46,22 +46,25 @@ class MainWindow(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("CSI Amplitude & Heatmap Viewer")
-        # Folder chứa video & dữ liệu
-        self.folder_path = None
+        # paths
+        self.video_folder = None
+        self.labels_df = None
+        self.csi_df = None
+        self.mac_list = []
+        # video state
         self.cap = None
         self.video_start = None
         self.video_end = None
         self.current_ts = None
         self.current_label = ''
         self.current_location = ''
-        # Đọc nhãn (timestamp.csv)
-        self.labels_df = None
-        # Đọc CSI (input.csv)
-        self.csi_df = None
-        self.mac_list = []
         # Widgets
-        self.folderButton = QtWidgets.QPushButton('Chọn thư mục')
-        self.folderButton.clicked.connect(self.choose_folder)
+        self.videoButton = QtWidgets.QPushButton('Chọn thư mục video')
+        self.videoButton.clicked.connect(self.select_video_folder)
+        self.labelsButton = QtWidgets.QPushButton('Chọn file nhãn')
+        self.labelsButton.clicked.connect(self.select_labels_file)
+        self.csiButton = QtWidgets.QPushButton('Chọn file CSI')
+        self.csiButton.clicked.connect(self.select_csi_file)
         self.lineEdit = QtWidgets.QLineEdit(placeholderText='Nhập timestamp (ms)')
         self.jumpButton = QtWidgets.QPushButton('Jump')
         self.jumpButton.clicked.connect(self.on_jump)
@@ -76,7 +79,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.canvas = MplCanvas(self)
         # Layout
         ctrl = QtWidgets.QHBoxLayout()
-        ctrl.addWidget(self.folderButton)
+        ctrl.addWidget(self.videoButton)
+        ctrl.addWidget(self.labelsButton)
+        ctrl.addWidget(self.csiButton)
         ctrl.addWidget(QtWidgets.QLabel('Timestamp (ms):'))
         ctrl.addWidget(self.lineEdit)
         ctrl.addWidget(self.jumpButton)
@@ -85,11 +90,11 @@ class MainWindow(QtWidgets.QMainWindow):
         top = QtWidgets.QHBoxLayout()
         top.addWidget(self.videoLabel)
         top.addWidget(self.canvas)
-        mb = QtWidgets.QVBoxLayout()
-        mb.addLayout(top)
-        mb.addLayout(ctrl)
+        main = QtWidgets.QVBoxLayout()
+        main.addLayout(top)
+        main.addLayout(ctrl)
         w = QtWidgets.QWidget()
-        w.setLayout(mb)
+        w.setLayout(main)
         self.setCentralWidget(w)
         # Timer
         self.timer = QtCore.QTimer(self)
@@ -97,85 +102,63 @@ class MainWindow(QtWidgets.QMainWindow):
         self.timer.setInterval(int(1000/DEFAULT_FPS))
         self.isPlaying = False
 
-    def choose_folder(self):
-        folder = QtWidgets.QFileDialog.getExistingDirectory(self, 'Chọn thư mục chứa video và CSV', os.getcwd())
-        if not folder:
-            return
-        self.folder_path = folder
-        # Load CSV
-        csv_ts = os.path.join(folder, 'timestamps.csv')
-        if os.path.exists(csv_ts):
-            df = pd.read_csv(csv_ts)
-            if 'start_utc_ms' in df.columns and 'end_utc_ms' in df.columns:
+    def select_video_folder(self):
+        folder = QtWidgets.QFileDialog.getExistingDirectory(self, 'Chọn thư mục chứa video')
+        if folder:
+            self.video_folder = folder
+
+    def select_labels_file(self):
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(self, 'Chọn file nhãn', filter='CSV Files (*.csv)')
+        if path:
+            df = pd.read_csv(path)
+            if {'start_utc_ms','end_utc_ms','label','location'}.issubset(df.columns):
                 self.labels_df = df
-        csi_path = os.path.join(folder, 'csi_data_20250508_101047_snapped_forward.csv')
-        if os.path.exists(csi_path):
-            self.csi_df = pd.read_csv(csi_path, usecols=['mac', 'timestamp_real_ms', 'CSI'])
-            self.mac_list = self.csi_df['mac'].unique()[:3].tolist()
-        # Reset video
-        if self.cap:
-            self.cap.release()
-            self.cap = None
-        self.slider.setEnabled(False)
-        self.videoLabel.clear()
+            else:
+                QtWidgets.QMessageBox.warning(self, 'Lỗi', 'File nhãn không hợp lệ!')
+                self.labels_df = None
+
+    def select_csi_file(self):
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(self, 'Chọn file CSI', filter='CSV Files (*.csv)')
+        if path:
+            df = pd.read_csv(path, usecols=['mac','timestamp_real_ms','CSI'])
+            self.csi_df = df
+            self.mac_list = df['mac'].unique()[:3].tolist()
 
     def find_video_file(self, ts):
-        # Tìm file .avi trong thư mục có start <= ts
-        files = [f for f in os.listdir(self.folder_path) if f.lower().endswith('.avi')]
-        starts = []
-        for f in files:
-            name = os.path.splitext(f)[0]
-            if name.isdigit():
-                starts.append(int(name))
-        if not starts:
-            return None
-        # Lấy start lớn nhất <= ts, nếu không có thì nhỏ nhất
+        files = [f for f in os.listdir(self.video_folder) if f.lower().endswith('.avi')]
+        starts = [int(os.path.splitext(f)[0]) for f in files if os.path.splitext(f)[0].isdigit()]
         cand = [s for s in starts if s <= ts]
-        if cand:
-            chosen = max(cand)
-        else:
-            chosen = min(starts)
-        return os.path.join(self.folder_path, f"{chosen}.avi"), chosen
+        chosen = max(cand) if cand else min(starts)
+        return os.path.join(self.video_folder, f"{chosen}.avi"), chosen
 
     def on_jump(self):
-        if not self.folder_path:
-            QtWidgets.QMessageBox.warning(self, 'Lỗi', 'Chưa chọn thư mục chứa video!')
+        if not (self.video_folder and self.csi_df is not None):
+            QtWidgets.QMessageBox.warning(self, 'Lỗi', 'Chưa chọn video folder hoặc CSI file!')
             return
         try:
             ts = int(self.lineEdit.text())
         except ValueError:
             QtWidgets.QMessageBox.warning(self, 'Lỗi', 'Timestamp không hợp lệ!')
             return
-        # Load video lần đầu và label
         if self.cap is None:
-            # Tìm file video và video_start
-            result = self.find_video_file(ts)
-            if not result:
-                QtWidgets.QMessageBox.critical(self, 'Lỗi', 'Không có file video .avi trong thư mục!')
-                return
-            video_file, vs = result
+            vf, vs = self.find_video_file(ts)
             self.video_start = vs
-            # Label
             self.current_label = ''
             self.current_location = ''
             if self.labels_df is not None:
                 row = self.labels_df[(self.labels_df['start_utc_ms'] <= ts) & (self.labels_df['end_utc_ms'] >= ts)]
                 if not row.empty:
                     r = row.iloc[0]
-                    self.current_label = str(r.get('label', ''))
-                    self.current_location = str(r.get('location', ''))
-            # Open video
-            self.cap = cv2.VideoCapture(video_file)
+                    self.current_label = str(r['label'])
+                    self.current_location = str(r['location'])
+            self.cap = cv2.VideoCapture(vf)
             fps = self.cap.get(cv2.CAP_PROP_FPS) or DEFAULT_FPS
             self.timer.setInterval(int(1000/fps))
             frame_count = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            duration = int(frame_count/fps*1000)
-            self.video_end = self.video_start + duration
-            # Slider
+            dur = int(frame_count / fps * 1000)
+            self.video_end = self.video_start + dur
             self.slider.setEnabled(True)
-            self.slider.setMinimum(0)
-            self.slider.setMaximum(duration)
-        # Tính rel và move
+            self.slider.setRange(0, dur)
         rel = max(0, min(ts - self.video_start, self.slider.maximum()))
         self.slider.setValue(rel)
         self.current_ts = self.video_start + rel
@@ -184,7 +167,6 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def on_play(self):
         if not self.cap:
-            QtWidgets.QMessageBox.information(self, 'Thông báo', 'Chưa chọn hoặc load video!')
             return
         self.isPlaying = not self.isPlaying
         if self.isPlaying:
@@ -199,15 +181,32 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def next_frame(self):
         fps = self.cap.get(cv2.CAP_PROP_FPS) or DEFAULT_FPS
-        step = int(1000/fps)
+        step = int(1000 / fps)
         nr = self.slider.value() + step
         if nr > self.slider.maximum():
             self.timer.stop()
             self.isPlaying = False
             return
         self.slider.setValue(nr)
-
     def update_video_frame(self):
+        # Nếu có labels_df, tìm lại label và location theo current_ts
+        if self.labels_df is not None:
+            row = self.labels_df[
+                (self.labels_df['start_utc_ms'] <= self.current_ts) &
+                (self.labels_df['end_utc_ms'] >= self.current_ts)
+            ]
+            if not row.empty:
+                r = row.iloc[0]
+                label = str(r['label'])
+                loc = str(r['location'])
+            else:
+                label = "-1"
+                loc = "-1"
+        else:
+            label = "-1"
+            loc = "-1"
+
+        print(f"Label: {label}, Location: {loc}, Timestamp: {self.current_ts}ms")
         rel = self.current_ts - self.video_start
         fps = self.cap.get(cv2.CAP_PROP_FPS) or DEFAULT_FPS
         idx = int(round(rel * fps / 1000))
@@ -218,47 +217,52 @@ class MainWindow(QtWidgets.QMainWindow):
         ret, frame = self.cap.read()
         if not ret:
             return
-        # Overlay label, location, timestamp
-        text = f"{self.current_label} @ {self.current_location} | t={self.current_ts}ms"
-        cv2.putText(frame, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+
+        # Overlay nhãn và timestamp, dùng label/loc vừa cập nhật
+        text = f"{label}@{loc} | t={self.current_ts}ms"
+        cv2.putText(frame, text, (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+
+        # Chuyển qua QPixmap và hiển thị
         img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         h, w, _ = img.shape
-        qimg = QtGui.QImage(img.data, w, h, 3*w, QtGui.QImage.Format_RGB888)
+        qimg = QtGui.QImage(img.data, w, h, 3 * w, QtGui.QImage.Format_RGB888)
         pix = QtGui.QPixmap.fromImage(qimg)
-        self.videoLabel.setPixmap(pix.scaled(self.videoLabel.size(), QtCore.Qt.KeepAspectRatio))
+        self.videoLabel.setPixmap(pix.scaled(
+            self.videoLabel.size(), QtCore.Qt.KeepAspectRatio))
 
     def parse_csi(self, s):
         arr = np.fromstring(s.strip('[]'), sep=',', dtype=np.int8)
         return arr[0::2] + 1j*arr[1::2]
 
     def update_plots(self):
-        half = WINDOW_MS//2
-        t0, t1 = self.current_ts-half, self.current_ts+half
+        half = WINDOW_MS // 2
+        t0, t1 = self.current_ts - half, self.current_ts + half
         for i, mac in enumerate(self.mac_list):
             ax_h, ax_l = self.canvas.axes[i]
             ax_h.clear(); ax_l.clear()
-            dfw = self.csi_df[(self.csi_df['mac']==mac) &
-                               (self.csi_df['timestamp_real_ms']>=t0) &
-                               (self.csi_df['timestamp_real_ms']<=t1)]
+            dfw = self.csi_df[(self.csi_df['mac'] == mac) &
+                               (self.csi_df['timestamp_real_ms'] >= t0) &
+                               (self.csi_df['timestamp_real_ms'] <= t1)]
             if dfw.empty:
                 ax_h.text(0.5, 0.5, 'No data', transform=ax_h.transAxes)
                 ax_l.text(0.5, 0.5, 'No data', transform=ax_l.transAxes)
             else:
                 raw = [list(map(int, v.strip('[]').split(','))) for v in dfw['CSI']]
                 filt = [filter_csi_raw(r) for r in raw]
-                amps = [np.abs(np.array(f)).reshape(-1,2).sum(axis=1) for f in filt]
-                mat = np.stack(amps)
-                ax_h.imshow(mat.T, aspect='auto', cmap='jet', interpolation='nearest', extent=[t0, t1, 0, mat.shape[1]], origin='lower')
+                amps = np.stack([np.abs(np.array(f)).reshape(-1, 2).sum(axis=1) for f in filt])
+                ax_h.imshow(amps.T, aspect='auto', cmap='jet', interpolation='nearest', extent=[t0, t1, 0, amps.shape[1]], origin='lower')
                 ax_h.axvline(self.current_ts, linestyle='--')
                 ax_h.set_ylabel('Subcarrier')
-                mean_amp = mat.mean(axis=1)
-                ax_l.plot(dfw['timestamp_real_ms'], mean_amp)
+                times = dfw['timestamp_real_ms'].values
+                for sc in range(amps.shape[1]):
+                    ax_l.plot(times, amps[:, sc], linewidth=1)
                 ax_l.axvline(self.current_ts, linestyle='--')
                 ax_l.set_ylabel('Amp')
             ax_l.set_xlabel('ms')
         self.canvas.draw()
 
-if __name__=='__main__':
+if __name__ == '__main__':
     app = QtWidgets.QApplication(sys.argv)
     win = MainWindow()
     win.show()
